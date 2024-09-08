@@ -126,6 +126,13 @@ pub struct SnarlStyle {
     )]
     pub wire_layer: Option<WireLayer>,
 
+    /// Color of a wire
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub wire_color: Option<Color32>,
+
     /// Additional blank space for dragging node by header.
     #[cfg_attr(
         feature = "serde",
@@ -455,6 +462,7 @@ impl SnarlStyle {
             select_style: None,
 
             allow_scroll_over_node: None,
+            wire_color: None,
 
             _non_exhaustive: (),
         }
@@ -665,7 +673,9 @@ impl<T> Snarl<T> {
                     }
                 }
 
-                let color = mix_colors(from_r.pin_fill, to_r.pin_fill);
+                let color = style
+                    .wire_color
+                    .unwrap_or(mix_colors(from_r.pin_fill, to_r.pin_fill));
 
                 let mut draw_width = wire_width;
                 if hovered_wire == Some(wire) {
@@ -876,6 +886,7 @@ impl<T> Snarl<T> {
                     for pin in pins {
                         let from_pos = wire_end_pos;
                         let to_r = &input_info[pin];
+                        let color = style.wire_color.unwrap_or(to_r.pin_fill);
 
                         draw_wire(
                             ui,
@@ -885,7 +896,7 @@ impl<T> Snarl<T> {
                             style.get_downscale_wire_frame(),
                             from_pos,
                             to_r.pos,
-                            Stroke::new(wire_width, to_r.pin_fill),
+                            Stroke::new(wire_width, color),
                             to_r.wire_style
                                 .zoomed(snarl_state.scale())
                                 .unwrap_or(style.get_wire_style(snarl_state.scale())),
@@ -896,6 +907,7 @@ impl<T> Snarl<T> {
                     for pin in pins {
                         let from_r = &output_info[pin];
                         let to_pos = wire_end_pos;
+                        let color = style.wire_color.unwrap_or(from_r.pin_fill);
 
                         draw_wire(
                             ui,
@@ -905,7 +917,7 @@ impl<T> Snarl<T> {
                             style.get_downscale_wire_frame(),
                             from_r.pos,
                             to_pos,
-                            Stroke::new(wire_width, from_r.pin_fill),
+                            Stroke::new(wire_width, color),
                             from_r
                                 .wire_style
                                 .zoomed(snarl_state.scale())
