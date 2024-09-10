@@ -26,6 +26,7 @@ use self::{
 pub use self::{
     background_pattern::{BackgroundPattern, CustomBackground, Grid, Viewport},
     pin::{AnyPins, BasicPinShape, CustomPinShape, PinInfo, PinShape},
+    state::SnarlStateOverride,
     viewer::SnarlViewer,
     wire::{WireLayer, WireStyle},
 };
@@ -512,8 +513,14 @@ impl<T> Snarl<T> {
 
     /// Render [`Snarl`] using given viewer and style into the [`Ui`].
 
-    pub fn show<V>(&mut self, viewer: &mut V, style: &SnarlStyle, id_source: impl Hash, ui: &mut Ui)
-    where
+    pub fn show<V>(
+        &mut self,
+        viewer: &mut V,
+        style: &SnarlStyle,
+        id_source: impl Hash,
+        over: SnarlStateOverride,
+        ui: &mut Ui,
+    ) where
         V: SnarlViewer<T>,
     {
         #![allow(clippy::too_many_lines)]
@@ -544,6 +551,7 @@ impl<T> Snarl<T> {
 
             let mut snarl_state =
                 SnarlState::load(ui.ctx(), snarl_id, pivot, viewport, self, style);
+            over.apply(&mut snarl_state);
 
             ui.style_mut().zoom(snarl_state.scale());
 
