@@ -716,13 +716,15 @@ impl<T> Snarl<T> {
                 }
             }
 
-            if bg_r.drag_started_by(PointerButton::Primary) && input.modifiers.shift {
+            if bg_r.drag_started_by(PointerButton::Primary) {
                 let screen_pos = input.interact_pos.unwrap_or(viewport.center());
                 let graph_pos = snarl_state.screen_pos_to_graph(screen_pos, viewport);
                 snarl_state.start_rect_selection(graph_pos);
             }
 
-            if bg_r.dragged_by(PointerButton::Primary) {
+            if bg_r.dragged_by(PointerButton::Middle)
+                || (bg_r.dragged_by(PointerButton::Secondary) && input.modifiers.shift)
+            {
                 if snarl_state.is_rect_selection() && input.hover_pos.is_some() {
                     let screen_pos = input.hover_pos.unwrap();
                     let graph_pos = snarl_state.screen_pos_to_graph(screen_pos, viewport);
