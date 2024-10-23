@@ -3,8 +3,8 @@
 use std::{collections::HashMap, hash::Hash};
 
 use egui::{
-    collapsing_header::paint_default_icon, epaint::Shadow, pos2, vec2, Align, Color32, Frame, Id,
-    Layout, Margin, Modifiers, PointerButton, Pos2, Rect, Rounding, Sense, Shape, Stroke, Ui, Vec2,
+    collapsing_header::paint_default_icon, pos2, vec2, Align, Color32, Frame, Id, Layout, Margin,
+    Modifiers, PointerButton, Pos2, Rect, Rounding, Sense, Shape, Stroke, Ui, Vec2,
 };
 
 use crate::{InPin, InPinId, Node, NodeId, OutPin, OutPinId, Snarl};
@@ -26,6 +26,7 @@ use self::{
 pub use self::{
     background_pattern::{BackgroundPattern, CustomBackground, Grid, Viewport},
     pin::{AnyPins, BasicPinShape, CustomPinShape, PinInfo, PinShape},
+    state::SnarlStateOverride,
     viewer::SnarlViewer,
     wire::{WireLayer, WireStyle},
 };
@@ -126,6 +127,13 @@ pub struct SnarlStyle {
     )]
     pub wire_layer: Option<WireLayer>,
 
+    /// Color of a wire
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub wire_color: Option<Color32>,
+
     /// Additional blank space for dragging node by header.
     #[cfg_attr(
         feature = "serde",
@@ -205,21 +213,6 @@ pub struct SnarlStyle {
     )]
     pub node_frame: Option<Frame>,
 
-    /// Frame used to draw node headers.
-    /// Defaults to [`node_frame`] without shadow and transparent fill.
-    ///
-    /// If set, it should not have shadow and fill should be either opaque of fully transparent
-    /// unless layering of header fill color with node fill color is desired.
-    #[cfg_attr(
-        feature = "serde",
-        serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            with = "serde_frame_option"
-        )
-    )]
-    pub header_frame: Option<Frame>,
-
     /// Enable centering by double click on background
     #[cfg_attr(
         feature = "serde",
@@ -252,6 +245,10 @@ pub struct SnarlStyle {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub select_style: Option<SelectionStyle>,
+
+    /// Flag to prevent scrolling when hovering over a node to affect zoom
+    /// defaults to true, which allows scrolling and zooming
+    pub allow_scroll_over_node: Option<bool>,
 
     #[doc(hidden)]
     #[cfg_attr(feature = "egui-probe", egui_probe(skip))]
@@ -353,12 +350,6 @@ impl SnarlStyle {
         self.node_frame
             .zoomed(scale)
             .unwrap_or_else(|| Frame::window(ui.style()))
-    }
-
-    fn get_header_frame(&self, scale: f32, ui: &Ui) -> Frame {
-        self.header_frame
-            .zoomed(scale)
-            .unwrap_or_else(|| self.get_node_frame(scale, ui).shadow(Shadow::NONE))
     }
 
     fn get_centering(&self) -> bool {
@@ -465,12 +456,14 @@ impl SnarlStyle {
             max_scale: None,
             scale_velocity: None,
             node_frame: None,
-            header_frame: None,
             centering: None,
             select_stoke: None,
             select_fill: None,
             select_rect_contained: None,
             select_style: None,
+
+            allow_scroll_over_node: None,
+            wire_color: None,
 
             _non_exhaustive: (),
         }
@@ -520,8 +513,14 @@ impl<T> Snarl<T> {
 
     /// Render [`Snarl`] using given viewer and style into the [`Ui`].
 
-    pub fn show<V>(&mut self, viewer: &mut V, style: &SnarlStyle, id_source: impl Hash, ui: &mut Ui)
-    where
+    pub fn show<V>(
+        &mut self,
+        viewer: &mut V,
+        style: &SnarlStyle,
+        id_source: impl Hash,
+        over: SnarlStateOverride,
+        ui: &mut Ui,
+    ) where
         V: SnarlViewer<T>,
     {
         #![allow(clippy::too_many_lines)]
@@ -552,6 +551,7 @@ impl<T> Snarl<T> {
 
             let mut snarl_state =
                 SnarlState::load(ui.ctx(), snarl_id, pivot, viewport, self, style);
+            over.apply(&mut snarl_state);
 
             ui.style_mut().zoom(snarl_state.scale());
 
@@ -564,7 +564,6 @@ impl<T> Snarl<T> {
             let wire_frame_size = style.get_wire_frame_size(snarl_state.scale(), ui);
             let wire_width = style.get_wire_width(snarl_state.scale(), ui);
             let node_frame = style.get_node_frame(snarl_state.scale(), ui);
-            let header_frame = style.get_header_frame(snarl_state.scale(), ui);
 
             let wire_shape_idx = match style.get_wire_layer() {
                 WireLayer::BehindNodes => Some(ui.painter().add(Shape::Noop)),
@@ -574,7 +573,10 @@ impl<T> Snarl<T> {
             // Zooming
             match input.hover_pos {
                 Some(hover_pos) if viewport.contains(hover_pos) => {
-                    if input.scroll_delta != 0.0 {
+                    if input.scroll_delta != 0.0
+                        && (!snarl_state.node_hovered()
+                            || style.allow_scroll_over_node.unwrap_or(true))
+                    {
                         let new_scale = (snarl_state.scale()
                             * (1.0 + input.scroll_delta * style.get_scale_velocity()))
                         .clamp(style.get_min_scale(), style.get_max_scale());
@@ -584,6 +586,7 @@ impl<T> Snarl<T> {
                 }
                 _ => {}
             }
+            snarl_state.set_node_hovered(false);
 
             let mut input_info = HashMap::new();
             let mut output_info = HashMap::new();
@@ -608,7 +611,6 @@ impl<T> Snarl<T> {
                     style,
                     snarl_id,
                     &node_frame,
-                    &header_frame,
                     &mut input_info,
                     &input,
                     &mut output_info,
@@ -679,7 +681,9 @@ impl<T> Snarl<T> {
                     }
                 }
 
-                let color = mix_colors(from_r.pin_fill, to_r.pin_fill);
+                let color = style
+                    .wire_color
+                    .unwrap_or(mix_colors(from_r.pin_fill, to_r.pin_fill));
 
                 let mut draw_width = wire_width;
                 if hovered_wire == Some(wire) {
@@ -712,13 +716,15 @@ impl<T> Snarl<T> {
                 }
             }
 
-            if bg_r.drag_started_by(PointerButton::Primary) && input.modifiers.shift {
+            if bg_r.drag_started_by(PointerButton::Primary) {
                 let screen_pos = input.interact_pos.unwrap_or(viewport.center());
                 let graph_pos = snarl_state.screen_pos_to_graph(screen_pos, viewport);
                 snarl_state.start_rect_selection(graph_pos);
             }
 
-            if bg_r.dragged_by(PointerButton::Primary) {
+            if bg_r.dragged_by(PointerButton::Middle)
+                || (bg_r.dragged_by(PointerButton::Secondary) && input.modifiers.shift)
+            {
                 if snarl_state.is_rect_selection() && input.hover_pos.is_some() {
                     let screen_pos = input.hover_pos.unwrap();
                     let graph_pos = snarl_state.screen_pos_to_graph(screen_pos, viewport);
@@ -890,6 +896,7 @@ impl<T> Snarl<T> {
                     for pin in pins {
                         let from_pos = wire_end_pos;
                         let to_r = &input_info[pin];
+                        let color = style.wire_color.unwrap_or(to_r.pin_fill);
 
                         draw_wire(
                             ui,
@@ -899,7 +906,7 @@ impl<T> Snarl<T> {
                             style.get_downscale_wire_frame(),
                             from_pos,
                             to_r.pos,
-                            Stroke::new(wire_width, to_r.pin_fill),
+                            Stroke::new(wire_width, color),
                             to_r.wire_style
                                 .zoomed(snarl_state.scale())
                                 .unwrap_or(style.get_wire_style(snarl_state.scale())),
@@ -910,6 +917,7 @@ impl<T> Snarl<T> {
                     for pin in pins {
                         let from_r = &output_info[pin];
                         let to_pos = wire_end_pos;
+                        let color = style.wire_color.unwrap_or(from_r.pin_fill);
 
                         draw_wire(
                             ui,
@@ -919,7 +927,7 @@ impl<T> Snarl<T> {
                             style.get_downscale_wire_frame(),
                             from_r.pos,
                             to_pos,
-                            Stroke::new(wire_width, from_r.pin_fill),
+                            Stroke::new(wire_width, color),
                             from_r
                                 .wire_style
                                 .zoomed(snarl_state.scale())
@@ -976,7 +984,6 @@ impl<T> Snarl<T> {
         style: &SnarlStyle,
         snarl_id: Id,
         node_frame: &Frame,
-        header_frame: &Frame,
         input_positions: &mut HashMap<InPinId, PinResponse>,
         input: &Input,
         output_positions: &mut HashMap<OutPinId, PinResponse>,
@@ -988,6 +995,7 @@ impl<T> Snarl<T> {
             pos,
             open,
             ref value,
+            last_size: _,
         } = self.nodes[node.0];
 
         let viewport = ui.max_rect();
@@ -1100,6 +1108,7 @@ impl<T> Snarl<T> {
         );
 
         let mut new_pins_size = Vec2::ZERO;
+        let mut body_size = Vec2::ZERO;
 
         let r = node_frame.show(node_ui, |ui| {
             let min_pin_y = node_rect.min.y + node_state.header_height() * 0.5;
@@ -1113,6 +1122,8 @@ impl<T> Snarl<T> {
             if (openness < 1.0 && open) || (openness > 0.0 && !open) {
                 ui.ctx().request_repaint();
             }
+
+            let header_frame = viewer.header_frame(node, ui, snarl_state.scale(), self);
 
             // Pins are placed under the header and must not go outside of the header frame.
             let payload_rect = Rect::from_min_max(
@@ -1156,6 +1167,7 @@ impl<T> Snarl<T> {
                         // If removed
                         return;
                     }
+                    body_size.x += ui.min_rect().size().x;
 
                     let y1 = ui.min_rect().max.y;
 
@@ -1279,6 +1291,7 @@ impl<T> Snarl<T> {
                         // If removed
                         return;
                     }
+                    body_size.x += ui.min_rect().size().x;
 
                     let y1 = ui.min_rect().max.y;
 
@@ -1409,13 +1422,14 @@ impl<T> Snarl<T> {
 
                 body_rect = body_ui.min_rect();
                 ui.expand_to_include_rect(body_rect.intersect(payload_clip_rect));
-                let body_size = body_rect.size();
-                node_state.set_body_width(body_size.x);
+                let body_size_ = body_rect.size();
+                node_state.set_body_width(body_size_.x);
 
-                new_pins_size.x += body_size.x + ui.spacing().item_spacing.x;
+                new_pins_size.x += body_size_.x + ui.spacing().item_spacing.x;
                 new_pins_size.y = f32::max(new_pins_size.y, body_size.y);
 
                 pins_bottom = f32::max(pins_bottom, body_rect.bottom());
+                body_size += body_size_;
 
                 if !self.nodes.contains(node.0) {
                     // If removed
@@ -1492,6 +1506,11 @@ impl<T> Snarl<T> {
                         if r.clicked_by(PointerButton::Primary) {
                             // Toggle node's openness.
                             self.open_node(node, !open);
+                            if open {
+                                viewer.on_expand(node, self);
+                            } else {
+                                viewer.on_collapse(node, self);
+                            }
                         }
                     }
 
@@ -1545,6 +1564,12 @@ impl<T> Snarl<T> {
 
         node_state.store(ui.ctx());
         ui.ctx().request_repaint();
+
+        self.nodes[node.0].last_size = body_size;
+        if !snarl_state.node_hovered() {
+            snarl_state.set_node_hovered(r.response.hovered());
+        }
+
         Some(DrawNodeResponse {
             node_moved,
             node_to_top,

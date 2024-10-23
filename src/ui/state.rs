@@ -145,6 +145,29 @@ struct RectSelect {
     current: Pos2,
 }
 
+#[derive(Default)]
+/// Overrides for state values
+pub struct SnarlStateOverride {
+    /// Override offset, or None for existing
+    pub offset: Option<Vec2>,
+    /// Override scale, or None for existing
+    pub scale: Option<f32>,
+}
+
+impl SnarlStateOverride {
+    pub(crate) fn apply(self, state: &mut SnarlState) {
+        if let Some(offset) = self.offset {
+            state.offset = offset;
+            state.dirty = true;
+        }
+        if let Some(scale) = self.scale {
+            state.scale = scale;
+            state.dirty = true;
+        }
+    }
+}
+
+/// Stores the state of a snarl graph
 pub struct SnarlState {
     /// Where viewport's center in graph's space.
     offset: Vec2,
@@ -158,7 +181,7 @@ pub struct SnarlState {
 
     id: Id,
 
-    /// Flag indicating that the graph state is dirty must be saved.
+    // Flag indicating that the graph state is dirty must be saved.
     dirty: bool,
 
     /// Flag indicating that the link menu is open.
@@ -172,6 +195,9 @@ pub struct SnarlState {
 
     /// Set of currently selected nodes.
     selected_nodes: HashSet<NodeId>,
+
+    /// Whether or not a node is currently hovered
+    over_node: bool,
 }
 
 #[derive(Clone)]
@@ -184,9 +210,11 @@ struct SnarlStateData {
     draw_order: Vec<NodeId>,
     rect_selection: Option<RectSelect>,
     selected_nodes: HashSet<NodeId>,
+    over_node: bool,
 }
 
 impl SnarlState {
+    /// Loads the state from the current egui context
     pub fn load<T>(
         cx: &Context,
         id: Id,
@@ -221,6 +249,7 @@ impl SnarlState {
             draw_order: data.draw_order,
             rect_selection: data.rect_selection,
             selected_nodes: data.selected_nodes,
+            over_node: data.over_node,
         }
     }
 
@@ -260,9 +289,11 @@ impl SnarlState {
             draw_order: Vec::new(),
             rect_selection: None,
             selected_nodes: HashSet::default(),
+            over_node: false,
         }
     }
 
+    /// Stores the state into the given context
     #[inline(always)]
     pub fn store(self, cx: &Context) {
         if self.dirty {
@@ -278,28 +309,39 @@ impl SnarlState {
                         draw_order: self.draw_order,
                         rect_selection: self.rect_selection,
                         selected_nodes: self.selected_nodes,
+                        over_node: self.over_node,
                     },
                 )
             });
         }
     }
 
+    /// Move the screen by delta
     #[inline(always)]
     pub fn pan(&mut self, delta: Vec2) {
         self.offset += delta;
         self.dirty = true;
     }
 
+    /// Get the current scale of the graph
     #[inline(always)]
     pub fn scale(&self) -> f32 {
         self.scale
     }
 
+    /// Get the current offset of the graph
     #[inline(always)]
     pub fn offset(&self) -> Vec2 {
         self.offset
     }
 
+    /// Is the mouse hovered over a node
+    #[inline(always)]
+    pub fn node_hovered(&self) -> bool {
+        self.over_node
+    }
+
+    /// Set the scale of the graph
     #[inline(always)]
     pub fn set_scale(&mut self, scale: f32) {
         self.target_scale = scale;
@@ -307,15 +349,24 @@ impl SnarlState {
     }
 
     #[inline(always)]
+    pub(crate) fn set_node_hovered(&mut self, hovered: bool) {
+        self.over_node = hovered;
+        self.dirty = true;
+    }
+
+    /// Convert the screen position into the graph position using the viewport, offset, and scale
+    #[inline(always)]
     pub fn screen_pos_to_graph(&self, pos: Pos2, viewport: Rect) -> Pos2 {
         (pos + self.offset - viewport.center().to_vec2()) / self.scale
     }
 
+    /// Convert the graph position into the screen position using the viewport, offset, and scale
     #[inline(always)]
     pub fn graph_pos_to_screen(&self, pos: Pos2, viewport: Rect) -> Pos2 {
         pos * self.scale - self.offset + viewport.center().to_vec2()
     }
 
+    /// Convert the screen rect into the graph rect using the viewport, offset, and scale
     #[inline(always)]
     pub fn screen_rect_to_graph(&self, rect: Rect, viewport: Rect) -> Rect {
         Rect::from_min_max(
@@ -324,6 +375,7 @@ impl SnarlState {
         )
     }
 
+    /// Convert the graph rect into the screen rect using the viewport, offset, and scale
     #[inline(always)]
     pub fn graph_rect_to_screen(&self, rect: Rect, viewport: Rect) -> Rect {
         Rect::from_min_max(
@@ -337,6 +389,7 @@ impl SnarlState {
     //     size * self.scale
     // }
 
+    /// Converts a screen vector into a graph vector using scale
     #[inline(always)]
     pub fn screen_vec_to_graph(&self, size: Vec2) -> Vec2 {
         size / self.scale
@@ -352,27 +405,27 @@ impl SnarlState {
     //     value / self.scale
     // }
 
-    pub fn start_new_wire_in(&mut self, pin: InPinId) {
+    pub(crate) fn start_new_wire_in(&mut self, pin: InPinId) {
         self.new_wires = Some(NewWires::In(vec![pin]));
         self.dirty = true;
     }
 
-    pub fn start_new_wire_out(&mut self, pin: OutPinId) {
+    pub(crate) fn start_new_wire_out(&mut self, pin: OutPinId) {
         self.new_wires = Some(NewWires::Out(vec![pin]));
         self.dirty = true;
     }
 
-    pub fn start_new_wires_in(&mut self, pins: &[InPinId]) {
+    pub(crate) fn start_new_wires_in(&mut self, pins: &[InPinId]) {
         self.new_wires = Some(NewWires::In(pins.to_vec()));
         self.dirty = true;
     }
 
-    pub fn start_new_wires_out(&mut self, pins: &[OutPinId]) {
+    pub(crate) fn start_new_wires_out(&mut self, pins: &[OutPinId]) {
         self.new_wires = Some(NewWires::Out(pins.to_vec()));
         self.dirty = true;
     }
 
-    pub fn add_new_wire_in(&mut self, pin: InPinId) {
+    pub(crate) fn add_new_wire_in(&mut self, pin: InPinId) {
         if let Some(NewWires::In(pins)) = &mut self.new_wires {
             if !pins.contains(&pin) {
                 pins.push(pin);
@@ -381,7 +434,7 @@ impl SnarlState {
         }
     }
 
-    pub fn add_new_wire_out(&mut self, pin: OutPinId) {
+    pub(crate) fn add_new_wire_out(&mut self, pin: OutPinId) {
         if let Some(NewWires::Out(pins)) = &mut self.new_wires {
             if !pins.contains(&pin) {
                 pins.push(pin);
@@ -390,7 +443,7 @@ impl SnarlState {
         }
     }
 
-    pub fn remove_new_wire_in(&mut self, pin: InPinId) {
+    pub(crate) fn remove_new_wire_in(&mut self, pin: InPinId) {
         if let Some(NewWires::In(pins)) = &mut self.new_wires {
             if let Some(idx) = pins.iter().position(|p| *p == pin) {
                 pins.swap_remove(idx);
@@ -399,7 +452,7 @@ impl SnarlState {
         }
     }
 
-    pub fn remove_new_wire_out(&mut self, pin: OutPinId) {
+    pub(crate) fn remove_new_wire_out(&mut self, pin: OutPinId) {
         if let Some(NewWires::Out(pins)) = &mut self.new_wires {
             if let Some(idx) = pins.iter().position(|p| *p == pin) {
                 pins.swap_remove(idx);
@@ -408,15 +461,15 @@ impl SnarlState {
         }
     }
 
-    pub fn has_new_wires(&self) -> bool {
+    pub(crate) fn has_new_wires(&self) -> bool {
         self.new_wires.is_some()
     }
 
-    pub fn new_wires(&self) -> Option<&NewWires> {
+    pub(crate) fn new_wires(&self) -> Option<&NewWires> {
         self.new_wires.as_ref()
     }
 
-    pub fn take_wires(&mut self) -> Option<NewWires> {
+    pub(crate) fn take_wires(&mut self) -> Option<NewWires> {
         self.dirty |= self.new_wires.is_some();
         self.new_wires.take()
     }
@@ -470,16 +523,16 @@ impl SnarlState {
         self.dirty = true;
     }
 
-    pub fn set_offset(&mut self, offset: Vec2) {
+    pub(crate) fn set_offset(&mut self, offset: Vec2) {
         self.offset = offset;
         self.dirty = true;
     }
 
-    pub fn selected_nodes(&self) -> &HashSet<NodeId> {
+    pub(crate) fn selected_nodes(&self) -> &HashSet<NodeId> {
         &self.selected_nodes
     }
 
-    pub fn select_one_node(&mut self, reset: bool, node: NodeId) {
+    pub(crate) fn select_one_node(&mut self, reset: bool, node: NodeId) {
         if reset {
             self.deselect_all_nodes();
         }
@@ -487,7 +540,7 @@ impl SnarlState {
         self.dirty |= self.selected_nodes.insert(node);
     }
 
-    pub fn select_many_nodes(&mut self, reset: bool, nodes: impl Iterator<Item = NodeId>) {
+    pub(crate) fn select_many_nodes(&mut self, reset: bool, nodes: impl Iterator<Item = NodeId>) {
         if reset {
             self.deselect_all_nodes();
         }
@@ -496,22 +549,22 @@ impl SnarlState {
         self.dirty |= !self.selected_nodes.is_empty();
     }
 
-    pub fn deselect_one_node(&mut self, node: NodeId) {
+    pub(crate) fn deselect_one_node(&mut self, node: NodeId) {
         self.dirty |= self.selected_nodes.remove(&node);
     }
 
-    pub fn deselect_many_nodes(&mut self, nodes: impl Iterator<Item = NodeId>) {
+    pub(crate) fn deselect_many_nodes(&mut self, nodes: impl Iterator<Item = NodeId>) {
         for node in nodes {
             self.dirty |= self.selected_nodes.remove(&node);
         }
     }
 
-    pub fn deselect_all_nodes(&mut self) {
+    pub(crate) fn deselect_all_nodes(&mut self) {
         self.dirty |= !self.selected_nodes.is_empty();
         self.selected_nodes.clear();
     }
 
-    pub fn start_rect_selection(&mut self, pos: Pos2) {
+    pub(crate) fn start_rect_selection(&mut self, pos: Pos2) {
         self.dirty |= self.rect_selection.is_none();
         self.rect_selection = Some(RectSelect {
             origin: pos,
@@ -519,23 +572,23 @@ impl SnarlState {
         });
     }
 
-    pub fn stop_rect_selection(&mut self) {
+    pub(crate) fn stop_rect_selection(&mut self) {
         self.dirty |= self.rect_selection.is_some();
         self.rect_selection = None;
     }
 
-    pub fn is_rect_selection(&self) -> bool {
+    pub(crate) fn is_rect_selection(&self) -> bool {
         self.rect_selection.is_some()
     }
 
-    pub fn update_rect_selection(&mut self, pos: Pos2) {
+    pub(crate) fn update_rect_selection(&mut self, pos: Pos2) {
         if let Some(rect_selection) = &mut self.rect_selection {
             rect_selection.current = pos;
             self.dirty = true;
         }
     }
 
-    pub fn rect_selection(&self) -> Option<Rect> {
+    pub(crate) fn rect_selection(&self) -> Option<Rect> {
         let rect = self.rect_selection?;
         Some(Rect::from_two_pos(rect.origin, rect.current))
     }
